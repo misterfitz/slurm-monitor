@@ -1,6 +1,11 @@
 # slurm-monitor
 
+[![Tests](https://github.com/misterfitz/slurm-monitor/actions/workflows/test.yml/badge.svg)](https://github.com/misterfitz/slurm-monitor/actions/workflows/test.yml)
+[![Slurm Integration](https://github.com/misterfitz/slurm-monitor/actions/workflows/slurm-integration.yml/badge.svg)](https://github.com/misterfitz/slurm-monitor/actions/workflows/slurm-integration.yml)
+
 Always-visible Slurm job status in your tmux status bar and Vim/Neovim statusline. See running/pending jobs, your fairshare score, and queue rank without leaving your editor.
+
+Works with **tmux** (TPM + powerline), **Vim 9+**, **Neovim 0.9+** (lualine, native statusline, heirline, feline), **LazyVim**, and **powerline**. Tested against Slurm 24.11 and 25.05.
 
 ![demo](https://raw.githubusercontent.com/misterfitz/slurm-monitor/main/demo/priority-demo.gif)
 
@@ -75,11 +80,68 @@ require('lualine').setup {
 }
 ```
 
+### LazyVim
+
+```lua
+-- ~/.config/nvim/lua/plugins/slurm.lua
+return {
+  { 'misterfitz/slurm-monitor',
+    opts = { user = vim.env.USER },
+    config = function(_, opts)
+      require('slurm-monitor').setup(opts)
+    end,
+  },
+}
+```
+
+Slurm status appears in your lualine automatically (LazyVim ships with lualine).
+
+### Neovim native statusline (no plugin required)
+
+```lua
+-- Use the Lua module directly with any statusline
+require('slurm-monitor').setup({ user = vim.env.USER })
+vim.o.statusline = '%f %=%{v:lua.require("slurm-monitor").status()}'
+```
+
+Works with heirline, feline, galaxyline, or any custom statusline:
+
+```lua
+{ provider = function() return require('slurm-monitor').status() end }
+```
+
 ### vim-airline
 
 ```vim
 Plug 'misterfitz/slurm-monitor'
 let g:airline_section_y = '%{SlurmStatus()}'
+```
+
+### Powerline
+
+Add the slurm segment to your powerline theme:
+
+```json
+// ~/.config/powerline/themes/tmux/default.json
+{
+    "segments": {
+        "right": [{
+            "function": "powerline.segments.slurm.slurm_status",
+            "args": { "user": "myuser" }
+        }]
+    }
+}
+```
+
+Works for both tmux-powerline and vim-powerline. Fairshare is color-coded:
+green (good), yellow (warning), red (critical). See `powerline/colorschemes/slurm.json`
+for the color scheme.
+
+To install the segment module, add this repo to your Python path or symlink:
+
+```bash
+ln -s /path/to/slurm-monitor/powerline/segments/slurm.py \
+  $(python3 -c "import powerline; print(powerline.__path__[0])")/segments/slurm.py
 ```
 
 ### Standalone CLI
@@ -157,11 +219,32 @@ slurm-status.sh  ──calls──►  slurm-monitor.py
 
 The cache architecture means vim doesn't spawn any subprocesses — it reads the file that tmux's status script already updates. If you're not using tmux, the vim plugin will call the script itself on first load.
 
+### Neovim Lua options (require('slurm-monitor').setup)
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `user` | `nil` | User to query for fairshare/rank |
+| `cache_file` | `/tmp/slurm-monitor-$USER.cache` | Cache file path |
+| `refresh_ms` | `10000` | Refresh interval in milliseconds |
+| `fallback` | `''` | Text when no data available |
+| `auto_generate` | `true` | Auto-call slurm-status.sh if cache missing |
+
 ## Requirements
 
 - Python 3.10+ (for the monitor script)
 - Slurm CLI tools (`squeue`, `sprio`, `sshare`) on PATH
 - Works on any HPC login node — no Docker required
+
+## Tested Against
+
+| Component | Versions |
+|-----------|----------|
+| **Slurm** | 24.11, 25.05 |
+| **Python** | 3.10, 3.11, 3.12, 3.13 |
+| **Vim** | 9.0, 9.1 |
+| **Neovim** | 0.9, 0.10, nightly |
+
+CI runs on every push via GitHub Actions — see the badges at the top.
 
 ## License
 

@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get the previous tag
+          prev_tag=$(git tag --sort=-creatordate | head -2 | tail -1)
+          if [ -z "$prev_tag" ]; then
+            log=$(git log --pretty=format:"- %s" HEAD)
+          else
+            log=$(git log --pretty=format:"- %s" "$prev_tag"..HEAD)
+          fi
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$log" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body: |
+            ## Changes
+
+            ${{ steps.changelog.outputs.changelog }}
+
+            ## Install
+
+            **tmux (TPM):** `set -g @plugin 'misterfitz/slurm-monitor'`
+            **vim-plug:** `Plug 'misterfitz/slurm-monitor'`
+            **lazy.nvim:** `{ 'misterfitz/slurm-monitor' }`
+          generate_release_notes: true

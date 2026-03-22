@@ -1,0 +1,17 @@
+{
+    "segment_data": {
+        "slurm_status": {
+            "args": {
+                "user": null
+            }
+        }
+    },
+    "segments": {
+        "right": [
+            {
+                "function": "powerline.segments.slurm.slurm_status",
+                "priority": 50
+            }
+        ]
+    }
+}

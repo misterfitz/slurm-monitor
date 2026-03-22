@@ -1,0 +1,8 @@
+{
+    "groups": {
+        "slurm":          { "fg": "gray8",           "bg": "gray2",  "attrs": [] },
+        "slurm:good":     { "fg": "brightgreen",     "bg": "gray2",  "attrs": ["bold"] },
+        "slurm:warning":  { "fg": "brightyellow",    "bg": "gray2",  "attrs": ["bold"] },
+        "slurm:critical": { "fg": "brightred",       "bg": "gray2",  "attrs": ["bold"] }
+    }
+}

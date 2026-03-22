@@ -1,0 +1,91 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  python-tests:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install test dependencies
+        run: pip install pytest
+
+      - name: Run tests
+        run: pytest tests/test_slurm_monitor.py -v
+
+  vim-tests:
+    name: ${{ matrix.editor }} ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - editor: vim
+            version: v9.0.0000
+          - editor: vim
+            version: v9.1.0000
+          - editor: neovim
+            version: v0.9.5
+          - editor: neovim
+            version: v0.10.0
+          - editor: neovim
+            version: nightly
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: rhysd/action-setup-vim@v1
+        id: vim
+        with:
+          neovim: ${{ matrix.editor == 'neovim' }}
+          version: ${{ matrix.version }}
+
+      - name: Test Vim plugin loads
+        if: matrix.editor == 'vim'
+        run: |
+          ${{ steps.vim.outputs.executable }} -u NONE -S tests/test_vim_load.vim
+          echo "Vim plugin test passed"
+
+      - name: Test Neovim plugin + Lua module loads
+        if: matrix.editor == 'neovim'
+        run: |
+          ${{ steps.vim.outputs.executable }} --headless -u NONE --cmd 'set rtp+=.' -l tests/test_neovim_load.lua
+          echo "Neovim module test passed"
+
+  shell-lint:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run shellcheck
+        run: |
+          shellcheck scripts/slurm-status.sh
+          shellcheck slurm-monitor.tmux
+
+  python-lint:
+    name: Python lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint
+        run: ruff check scripts/ powerline/ tests/
