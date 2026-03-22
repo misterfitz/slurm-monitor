@@ -8,13 +8,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  slurm-test:
-    name: Slurm ${{ matrix.slurm-tag }}
+  slurm-parsing:
+    name: Slurm output parsing
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        slurm-tag: ['latest']
 
     steps:
       - uses: actions/checkout@v4
@@ -23,70 +19,140 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Start Slurm container
-        run: |
-          docker run -d --name slurm-test \
-            --hostname slurmctl \
-            nathanhess/slurm:full
+      - name: Install test deps
+        run: pip install pytest
 
-          # Wait for Slurm daemons to start
-          echo "Waiting for Slurm to start..."
-          for i in $(seq 1 30); do
-            if docker exec slurm-test sinfo 2>/dev/null | grep -qE "idle|alloc|mix"; then
-              echo "Slurm is ready!"
-              docker exec slurm-test sinfo
-              break
-            fi
-            echo "  attempt $i/30..."
-            sleep 3
-          done
-
-      - name: Copy monitor script into container
+      - name: Test with mock Slurm output
         run: |
-          docker cp scripts/slurm-monitor.py slurm-test:/usr/local/bin/slurm-monitor
-          docker exec slurm-test chmod +x /usr/local/bin/slurm-monitor
+          # Create mock Slurm commands that return realistic output
+          # This tests that our parser handles real squeue/sprio/sshare formats
+          mkdir -p /tmp/mock-slurm
 
-      - name: Verify Slurm version
-        run: |
-          docker exec slurm-test sinfo --version
+          # Mock squeue — standard output format
+          cat > /tmp/mock-slurm/squeue << 'MOCK'
+          #!/bin/bash
+          if [[ "$*" == *"-o '%T'"* ]] || [[ "$*" == *"-o %T"* ]]; then
+            for i in $(seq 1 50); do echo "RUNNING"; done
+            for i in $(seq 1 200); do echo "PENDING"; done
+          elif [[ "$*" == *"-u"* ]]; then
+            for i in $(seq 1 5); do echo "RUNNING"; done
+            for i in $(seq 1 20); do echo "PENDING"; done
+          fi
+          MOCK
+          chmod +x /tmp/mock-slurm/squeue
 
-      - name: Test basic output
-        run: |
-          output=$(docker exec slurm-test python3 /usr/local/bin/slurm-monitor)
-          echo "Basic output: '$output'"
-          echo "$output" | grep -q "R:" || { echo "FAIL: missing R: in output"; exit 1; }
-          echo "$output" | grep -q "P:" || { echo "FAIL: missing P: in output"; exit 1; }
+          # Mock sshare — standard output format
+          cat > /tmp/mock-slurm/sshare << 'MOCK'
+          #!/bin/bash
+          if [[ "$*" == *"-u"* ]]; then
+            echo "physics|testuser|200|0.8200|48502198|0.0812"
+          elif [[ "$*" == *"-A"* ]]; then
+            echo "physics||200|0.6500|100000000|0.1200"
+            echo "physics|user01|100|0.8200|48502198|0.0812"
+            echo "physics|user02|100|0.5500|52301440|0.0877"
+          else
+            echo "physics|user01|200|0.8200|48502198|0.0812"
+            echo "cs|user02|180|0.1500|71200800|0.1194"
+            echo "bio|user03|150|0.9500|1200100|0.0020"
+          fi
+          MOCK
+          chmod +x /tmp/mock-slurm/sshare
 
-      - name: Test JSON output
-        run: |
-          output=$(docker exec slurm-test python3 /usr/local/bin/slurm-monitor --json)
-          echo "JSON output: $output"
+          # Mock sprio — standard output format
+          cat > /tmp/mock-slurm/sprio << 'MOCK'
+          #!/bin/bash
+          if [[ "$*" == *"--format"* ]]; then
+            echo "84600|0.9500"
+            echo "84601|0.8200"
+            echo "84602|0.7100"
+          fi
+          MOCK
+          chmod +x /tmp/mock-slurm/sprio
+
+          # Mock scontrol
+          cat > /tmp/mock-slurm/scontrol << 'MOCK'
+          #!/bin/bash
+          echo "PriorityType = priority/multifactor"
+          echo "PriorityWeightFairshare = 10000"
+          MOCK
+          chmod +x /tmp/mock-slurm/scontrol
+
+          # Mock sinfo (for which check)
+          cat > /tmp/mock-slurm/sinfo << 'MOCK'
+          #!/bin/bash
+          echo "slurm 25.05.0"
+          MOCK
+          chmod +x /tmp/mock-slurm/sinfo
+
+          # Run slurm-monitor with mock commands on PATH
+          export PATH="/tmp/mock-slurm:$PATH"
+
+          echo "=== Basic output ==="
+          output=$(python3 scripts/slurm-monitor.py)
+          echo "$output"
+          echo "$output" | grep -q "R:" || { echo "FAIL: missing R:"; exit 1; }
+          echo "$output" | grep -q "P:" || { echo "FAIL: missing P:"; exit 1; }
+
+          echo "=== JSON output ==="
+          output=$(python3 scripts/slurm-monitor.py --json)
+          echo "$output"
           echo "$output" | python3 -c "
           import sys, json
           d = json.load(sys.stdin)
-          assert 'running' in d, 'missing running key'
-          assert 'pending' in d, 'missing pending key'
-          print('JSON valid: running=%d pending=%d' % (d['running'], d['pending']))
+          assert 'running' in d, 'missing running'
+          assert 'pending' in d, 'missing pending'
+          assert d['running'] == 50, f'expected 50 running, got {d[\"running\"]}'
+          assert d['pending'] == 200, f'expected 200 pending, got {d[\"pending\"]}'
+          print('JSON valid: R=%d P=%d' % (d['running'], d['pending']))
           "
 
-      - name: Test long format
-        run: |
-          output=$(docker exec slurm-test python3 /usr/local/bin/slurm-monitor --long)
-          echo "Long output: '$output'"
-          echo "$output" | grep -q "R:" || { echo "FAIL: missing R: in long output"; exit 1; }
+          echo "=== User output ==="
+          output=$(python3 scripts/slurm-monitor.py -u testuser --json)
+          echo "$output"
+          echo "$output" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          assert d.get('user') is not None, 'missing user data'
+          assert d['user'].get('fairshare', 0) > 0, 'missing fairshare'
+          print('User valid: fs=%s' % d['user'].get('fairshare'))
+          "
 
-      - name: Test color output
-        run: |
-          output=$(docker exec slurm-test python3 /usr/local/bin/slurm-monitor --color)
-          echo "Color output: '$output'"
+          echo "=== Long format ==="
+          output=$(python3 scripts/slurm-monitor.py --long)
+          echo "$output"
+          echo "$output" | grep -q "|" || { echo "FAIL: missing pipe separator in long output"; exit 1; }
 
-      - name: Test user query
-        run: |
-          output=$(docker exec slurm-test python3 /usr/local/bin/slurm-monitor -u slurm --json 2>&1) || true
-          echo "User output: $output"
-          # User query may fail if accounting isn't configured — that's OK
-          # We just verify it doesn't crash
+          echo "=== Color output ==="
+          output=$(python3 scripts/slurm-monitor.py -u testuser --color)
+          echo "$output"
+          echo "$output" | grep -q '#\[fg=' || { echo "FAIL: missing tmux color codes"; exit 1; }
 
-      - name: Cleanup
-        if: always()
-        run: docker rm -f slurm-test 2>/dev/null || true
+          echo "=== All integration tests passed ==="
+
+      - name: Test Slurm output format compatibility
+        run: |
+          # Test that our parser handles edge cases in Slurm output
+          python3 -c "
+          import sys, os
+          sys.path.insert(0, 'scripts')
+          import importlib
+          m = importlib.import_module('slurm-monitor')
+
+          # Test compact_num edge cases
+          assert m.compact_num(0) == '0'
+          assert m.compact_num(999) == '999'
+          assert m.compact_num(1000) == '1.0k'
+          assert m.compact_num(10000) == '10k'
+          assert m.compact_num(1000000) == '1.0M'
+
+          # Test format_status with varying data shapes
+          assert 'R:0' in m.format_status({'running': 0, 'pending': 0, 'total': 0})
+          assert 'fs:' in m.format_status({'running': 1, 'pending': 2, 'total': 3, 'user': {'fairshare': 0.5, 'rank': 1}})
+          assert '#[fg=' in m.format_status({'running': 1, 'pending': 2, 'total': 3, 'user': {'fairshare': 0.5, 'rank': 1}}, color=True)
+
+          # Test with None user (common case)
+          out = m.format_status({'running': 100, 'pending': 200, 'total': 300, 'user': None})
+          assert 'fs:' not in out
+
+          print('All compatibility tests passed')
+          "
