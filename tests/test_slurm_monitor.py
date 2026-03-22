@@ -1,19 +1,26 @@
 """Tests for slurm-monitor.py — formatters, parsers, CLI."""
 
+import importlib
 import json
 import os
 import subprocess
 import sys
 import tempfile
-from unittest.mock import patch
 
-import pytest
-
-# Add scripts dir to path
+# Path setup for importing hyphenated module and local packages
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import importlib
-slurm_monitor = importlib.import_module("slurm-monitor")
+import pytest  # noqa: E402
+
+from powerline.segments.slurm import (  # noqa: E402
+    _fs_highlight,
+    _parse_status,
+    _read_cache,
+    slurm_status,
+)
+
+slurm_monitor = importlib.import_module("slurm-monitor")  # noqa: E402
 
 
 # ── Pure function tests ──────────────────────────────────────────
@@ -194,15 +201,6 @@ class TestCLI:
 
 
 # ── Powerline segment tests ──────────────────────────────────────
-
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from powerline.segments.slurm import (
-    _read_cache,
-    _parse_status,
-    _fs_highlight,
-    slurm_status,
-)
 
 
 class TestPowerlineReadCache:

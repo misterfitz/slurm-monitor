@@ -15,7 +15,6 @@ Usage:
 
 import argparse
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -119,7 +118,7 @@ def get_user_info(user: str) -> dict | None:
         # Count how many pending jobs have higher priority
         out = run_slurm("sprio -h --sort=-Y --format='%i' 2>/dev/null")
         if out:
-            all_ids = [l.strip() for l in out.split("\n") if l.strip()]
+            all_ids = [line.strip() for line in out.split("\n") if line.strip()]
             try:
                 rank = all_ids.index(user_best_id) + 1
                 info["rank"] = rank
@@ -270,9 +269,9 @@ def format_long(data: dict) -> str:
         parts.append(seg)
 
     if "top_fs" in data and "low_fs" in data:
-        t = data["top_fs"]
-        l = data["low_fs"]
-        parts.append(f"hi:{t['user']}({t['fairshare']:.2f}) lo:{l['user']}({l['fairshare']:.2f})")
+        top = data["top_fs"]
+        low = data["low_fs"]
+        parts.append(f"hi:{top['user']}({top['fairshare']:.2f}) lo:{low['user']}({low['fairshare']:.2f})")
 
     return " | ".join(parts)
 
