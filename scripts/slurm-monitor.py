@@ -13,6 +13,8 @@ Usage:
     slurm-monitor --watch -r 10        # Refresh every 10s
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import shutil
