@@ -17,6 +17,7 @@ local config = {
     refresh_ms = 10000,
     fallback = '',
     user = nil,
+    qos = nil,
     auto_generate = true,
 }
 
@@ -48,6 +49,9 @@ local function refresh()
             local cmd = script
             if config.user then
                 cmd = cmd .. ' -u ' .. config.user
+            end
+            if config.qos then
+                cmd = cmd .. ' -q ' .. config.qos
             end
             vim.fn.system(cmd)
             -- Re-read after generation

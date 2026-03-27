@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import time
+from typing import Optional
 
 
 def run_slurm(cmd: str) -> str | None:
@@ -44,11 +45,14 @@ def check_slurm_available() -> bool:
 # ── Data gathering ──────────────────────────────────────────────────
 
 
-def get_queue_counts() -> dict:
-    """Get running/pending/total job counts."""
+def get_queue_counts(qos: "Optional[str]" = None) -> dict:
+    """Get running/pending/total job counts, optionally filtered by QOS."""
     counts = {"running": 0, "pending": 0, "total": 0}
 
-    out = run_slurm("squeue -h -o '%T' --sort=-p")
+    cmd = "squeue -h -o '%T' --sort=-p"
+    if qos:
+        cmd += f" -q {qos}"
+    out = run_slurm(cmd)
     if not out:
         return counts
 
@@ -65,8 +69,69 @@ def get_queue_counts() -> dict:
     return counts
 
 
+def get_user_qos(user: str, account: Optional[str] = None) -> list:
+    """Get QOS associations for a user from sacctmgr.
+
+    Returns a list of dicts: [{"qos": "normal", "account": "physics", ...}]
+    """
+    cmd = f"sacctmgr show assoc user={user} format=Account,QOS,MaxJobs,MaxSubmitJobs,Priority -P -n"
+    if account:
+        cmd += f" account={account}"
+    out = run_slurm(cmd)
+    if not out:
+        return []
+
+    assocs = []
+    for line in out.split("\n"):
+        parts = line.split("|")
+        if len(parts) >= 5:
+            qos_list = parts[1].strip()
+            if qos_list:
+                for qos_name in qos_list.split(","):
+                    qos_name = qos_name.strip()
+                    if qos_name:
+                        assocs.append({
+                            "account": parts[0].strip(),
+                            "qos": qos_name,
+                            "max_jobs": _safe_int(parts[2]) if parts[2].strip() else None,
+                            "max_submit": _safe_int(parts[3]) if parts[3].strip() else None,
+                            "priority": _safe_int(parts[4]) if parts[4].strip() else None,
+                        })
+    return assocs
+
+
+def get_job_qos(user: str) -> dict:
+    """Get per-QOS job breakdown for a user from squeue.
+
+    Returns {"normal": {"running": 5, "pending": 10}, "gpu": {"running": 2, "pending": 3}}
+    """
+    out = run_slurm(f"squeue -u {user} -h -o '%T|%q'")
+    if not out:
+        return {}
+
+    breakdown = {}
+    for line in out.split("\n"):
+        parts = line.strip().split("|")
+        if len(parts) < 2:
+            continue
+        state = parts[0].strip().upper()
+        qos = parts[1].strip()
+        if not qos:
+            qos = "default"
+
+        if qos not in breakdown:
+            breakdown[qos] = {"running": 0, "pending": 0}
+
+        if state in ("RUNNING", "R", "COMPLETING", "CG"):
+            breakdown[qos]["running"] += 1
+        elif state in ("PENDING", "PD"):
+            breakdown[qos]["pending"] += 1
+
+    return breakdown
+
+
 def get_user_info(user: str) -> dict | None:
-    """Get fairshare and queue info for a specific user."""
+    """Get fairshare, QOS, and queue info for a specific user."""
     info = {}
 
     # Fairshare from sshare
@@ -86,6 +151,17 @@ def get_user_info(user: str) -> dict | None:
 
     if not info:
         return None
+
+    # QOS associations
+    qos_assocs = get_user_qos(user, info.get("account"))
+    if qos_assocs:
+        info["qos"] = [a["qos"] for a in qos_assocs]
+        info["qos_details"] = qos_assocs
+
+    # Per-QOS job breakdown
+    job_qos = get_job_qos(user)
+    if job_qos:
+        info["job_qos"] = job_qos
 
     # User's job counts
     out = run_slurm(f"squeue -u {user} -h -o '%T'")
@@ -231,8 +307,15 @@ def format_status(data: dict, color: bool = False, max_width: int = 0) -> str:
         else:
             segment = f"fs:{fs:.2f}"
 
-        if "rank" in u:
+        if "rank" in u and "total_pending" in u:
+            segment += f" #{u['rank']}/{compact_num(u['total_pending'])}"
+        elif "rank" in u:
             segment += f" #{u['rank']}"
+
+        # Show active QOS (the ones with running/pending jobs)
+        qos_names = _active_qos_names(u)
+        if qos_names:
+            segment += f" qos:{','.join(qos_names)}"
 
         parts.append(segment)
 
@@ -248,8 +331,19 @@ def format_status(data: dict, color: bool = False, max_width: int = 0) -> str:
     return result
 
 
+def _active_qos_names(user_info: dict) -> list:
+    """Return QOS names that have active jobs, or all associated QOS if no jobs."""
+    job_qos = user_info.get("job_qos", {})
+    if job_qos:
+        return sorted(job_qos.keys())
+    qos_list = user_info.get("qos", [])
+    if qos_list:
+        return sorted(qos_list)
+    return []
+
+
 def format_long(data: dict) -> str:
-    """Format as a longer one-liner with fairshare extremes."""
+    """Format as a longer one-liner with fairshare extremes and QOS."""
     parts = []
 
     parts.append(f"R:{compact_num(data['running'])} P:{compact_num(data['pending'])}")
@@ -261,6 +355,16 @@ def format_long(data: dict) -> str:
             seg += f" #{u['rank']}/{compact_num(u.get('total_pending', 0))}"
         if u.get("running") or u.get("pending"):
             seg += f" (r:{u.get('running', 0)} p:{u.get('pending', 0)})"
+        # QOS breakdown per-QOS job counts
+        job_qos = u.get("job_qos", {})
+        if job_qos:
+            qos_parts = []
+            for qname in sorted(job_qos.keys()):
+                jq = job_qos[qname]
+                qos_parts.append(f"{qname}:r{jq['running']}p{jq['pending']}")
+            seg += f" [{' '.join(qos_parts)}]"
+        elif u.get("qos"):
+            seg += f" qos:{','.join(sorted(u['qos']))}"
         parts.append(seg)
 
     if "account" in data and data["account"]:
@@ -295,9 +399,13 @@ def _safe_int(val: str) -> int:
 # ── Main ────────────────────────────────────────────────────────────
 
 
-def build_data(user: str | None = None, account: str | None = None) -> dict:
+def build_data(
+    user: Optional[str] = None,
+    account: Optional[str] = None,
+    qos: Optional[str] = None,
+) -> dict:
     """Collect all status data."""
-    data = get_queue_counts()
+    data = get_queue_counts(qos=qos)
 
     if user:
         data["user"] = get_user_info(user)
@@ -320,11 +428,12 @@ def main():
         epilog="""
 examples:
   slurm-monitor                       Cluster overview
-  slurm-monitor -u $USER              Personal status with queue rank
+  slurm-monitor -u $USER              Personal status with QOS and queue rank
   slurm-monitor -u $USER --color      With tmux color codes
-  slurm-monitor -u $USER --json       Machine-readable JSON
+  slurm-monitor -u $USER --json       Machine-readable JSON (includes QOS details)
+  slurm-monitor -u $USER -q gpu       Filter by QOS name
   slurm-monitor --watch               Refresh every 5s
-  slurm-monitor --long                Full one-liner with fairshare extremes
+  slurm-monitor --long                Full one-liner with QOS breakdown
 
 tmux.conf:
   set -g status-right '#(slurm-monitor -u $USER)'
@@ -345,6 +454,8 @@ tmux.conf:
                         help="Continuously refresh")
     parser.add_argument("-r", "--refresh", type=int, default=5,
                         help="Refresh interval in seconds (default: 5)")
+    parser.add_argument("-q", "--qos", default=None,
+                        help="Filter by QOS name")
     parser.add_argument("--max-width", type=int, default=0,
                         help="Truncate output to N characters")
 
@@ -360,7 +471,7 @@ tmux.conf:
     if args.watch:
         try:
             while True:
-                data = build_data(user=args.user, account=args.account)
+                data = build_data(user=args.user, account=args.account, qos=args.qos)
                 if args.json:
                     line = json.dumps(data, default=str)
                 elif args.long:
@@ -373,7 +484,7 @@ tmux.conf:
         except KeyboardInterrupt:
             sys.stdout.write("\n")
     else:
-        data = build_data(user=args.user, account=args.account)
+        data = build_data(user=args.user, account=args.account, qos=args.qos)
         if args.json:
             print(json.dumps(data, default=str))
         elif args.long:

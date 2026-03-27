@@ -24,11 +24,12 @@ Works with **tmux** (TPM + powerline), **Vim 9+**, **Neovim 0.9+** (lualine, nat
 ## What it shows
 
 ```
-R:5k P:25k fs:0.82 #3
-│    │      │       └── Your best pending job is #3 in the queue
-│    │      └────────── Your fairshare score (higher = more priority)
-│    └───────────────── 25,000 pending jobs cluster-wide
-└────────────────────── 5,000 running jobs cluster-wide
+R:5k P:25k fs:0.82 #3/25k qos:normal
+│    │      │       │      └── Your active QOS (from jobs or account association)
+│    │      │       └──────── Your best pending job is #3 of 25k in the queue
+│    │      └──────────────── Your fairshare score (higher = more priority)
+│    └─────────────────────── 25,000 pending jobs cluster-wide
+└──────────────────────────── 5,000 running jobs cluster-wide
 ```
 
 ## Install
@@ -161,10 +162,11 @@ ln -s $(pwd)/scripts/slurm-monitor.py ~/.local/bin/slurm-monitor
 
 ```bash
 slurm-monitor                          # R:5k P:25k
-slurm-monitor -u $USER                 # R:5k P:25k fs:0.82 #3
+slurm-monitor -u $USER                 # R:5k P:25k fs:0.82 #3/25k qos:normal
 slurm-monitor -u $USER --color         # With tmux color codes
-slurm-monitor -u $USER --long          # Full line with fairshare extremes
+slurm-monitor -u $USER --long          # Full line with QOS breakdown
 slurm-monitor -u $USER --json          # {"running": 5024, "pending": 24976, ...}
+slurm-monitor -u $USER -q gpu          # Filter by QOS name
 slurm-monitor --watch                  # Refresh every 5s
 slurm-monitor --watch -r 10            # Refresh every 10s
 slurm-monitor -a mygroup               # Account-level summary
@@ -173,8 +175,10 @@ slurm-monitor -a mygroup               # Account-level summary
 ### Long format
 
 ```
-R:5k P:25k | user01 fs:0.82 #3/25k (r:10 p:50) | hi:user44(0.97) lo:user13(0.15)
+R:5k P:25k | user01 fs:0.82 #3/25k (r:10 p:50) [normal:r5p10 gpu:r5p40] | hi:user44(0.97) lo:user13(0.15)
 ```
+
+The `[normal:r5p10 gpu:r5p40]` shows per-QOS job breakdown (running/pending counts per QOS).
 
 ## Configuration
 
@@ -192,6 +196,7 @@ R:5k P:25k | user01 fs:0.82 #3/25k (r:10 p:50) | hi:user44(0.97) lo:user13(0.15)
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `g:slurm_monitor_user` | *(none)* | User to query (triggers cache generation) |
+| `g:slurm_monitor_qos` | *(none)* | Filter by QOS name |
 | `g:slurm_monitor_refresh` | `10000` | Refresh interval in milliseconds |
 | `g:slurm_monitor_cache_file` | `/tmp/slurm-monitor-$USER.cache` | Cache file path |
 | `g:slurm_monitor_fallback` | `''` | Text to show when no data available |
@@ -224,6 +229,7 @@ The cache architecture means vim doesn't spawn any subprocesses — it reads the
 | Option | Default | Description |
 |--------|---------|-------------|
 | `user` | `nil` | User to query for fairshare/rank |
+| `qos` | `nil` | Filter by QOS name |
 | `cache_file` | `/tmp/slurm-monitor-$USER.cache` | Cache file path |
 | `refresh_ms` | `10000` | Refresh interval in milliseconds |
 | `fallback` | `''` | Text when no data available |
@@ -231,7 +237,7 @@ The cache architecture means vim doesn't spawn any subprocesses — it reads the
 
 ## Requirements
 
-- Python 3.10+ (for the monitor script)
+- Python 3.8+ (for the monitor script)
 - Slurm CLI tools (`squeue`, `sprio`, `sshare`) on PATH
 - Works on any HPC login node — no Docker required
 

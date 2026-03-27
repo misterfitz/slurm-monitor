@@ -28,6 +28,7 @@ let g:loaded_slurm_monitor = 1
 " g:slurm_monitor_cache_file  — path to cache file (default: /tmp/slurm-monitor-$USER.cache)
 " g:slurm_monitor_refresh     — refresh interval in ms (default: 10000)
 " g:slurm_monitor_user        — user to query (triggers slurm-status.sh if cache missing)
+" g:slurm_monitor_qos         — QOS name to filter by (optional)
 " g:slurm_monitor_fallback    — text to show when no data (default: '')
 
 let s:cache_file = get(g:, 'slurm_monitor_cache_file',
@@ -59,6 +60,10 @@ function! s:UpdateSlurmCache() abort
         let l:cmd = l:status_script
         if len(l:user) > 0
             let l:cmd .= ' -u ' . l:user
+        endif
+        let l:qos = get(g:, 'slurm_monitor_qos', '')
+        if len(l:qos) > 0
+            let l:cmd .= ' -q ' . l:qos
         endif
         silent call system(l:cmd)
         " Re-read after generation
