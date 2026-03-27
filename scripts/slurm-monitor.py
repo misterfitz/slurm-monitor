@@ -227,27 +227,35 @@ def get_user_info(user: str) -> dict | None:
 
 
 def get_fairshare_extremes() -> dict:
-    """Get the highest and lowest fairshare users."""
+    """Get the highest and lowest fairshare across accounts.
+
+    Uses account-level rows (where User is empty) from sshare.
+    Excludes accounts ending with 'bot'.
+    """
     out = run_slurm(
         "sshare -a -P -h --format=Account,User,FairShare"
     )
     if not out:
         return {}
 
-    users = []
+    accounts = []
     for line in out.split("\n"):
         parts = line.split("|")
         if len(parts) >= 3:
+            account = parts[0].strip()
             user = parts[1].strip()
-            if user and user != "(null)":
+            # Account-level rows have an empty User field
+            if not user and account and account != "(null)":
+                if account.lower().endswith("bot"):
+                    continue
                 fs = _safe_float(parts[2])
-                users.append({"user": user, "account": parts[0].strip(), "fairshare": fs})
+                accounts.append({"account": account, "fairshare": fs})
 
-    if not users:
+    if not accounts:
         return {}
 
-    top = max(users, key=lambda x: x["fairshare"])
-    low = min(users, key=lambda x: x["fairshare"])
+    top = max(accounts, key=lambda x: x["fairshare"])
+    low = min(accounts, key=lambda x: x["fairshare"])
     return {"top_fs": top, "low_fs": low}
 
 
@@ -396,7 +404,7 @@ def format_long(data: dict) -> str:
     if "top_fs" in data and "low_fs" in data:
         top = data["top_fs"]
         low = data["low_fs"]
-        parts.append(f"hi:{top['user']}({top['fairshare']:.2f}) lo:{low['user']}({low['fairshare']:.2f})")
+        parts.append(f"hi:{top['account']}({top['fairshare']:.2f}) lo:{low['account']}({low['fairshare']:.2f})")
 
     return " | ".join(parts)
 

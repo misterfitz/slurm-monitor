@@ -191,7 +191,7 @@ slurm-monitor -a mygroup               # Account-level summary
 ### Long format
 
 ```
-R:4.8k P:25k | user01 fs:0.73 #42/25k (r:11 p:17) [gpu:r3p5 normal:r8p12] | hi:user04(0.95) lo:user09(0.08)
+R:4.8k P:25k | user01 fs:0.73 #42/25k (r:11 p:17) [gpu:r3p5 normal:r8p12] | hi:bio(0.91) lo:ling(0.12)
 ```
 
 The `[gpu:r3p5 normal:r8p12]` shows per-QOS job breakdown (running/pending counts per QOS).
@@ -222,9 +222,9 @@ Press `prefix + S` (configurable) to open a popup with the full dashboard:
     normal        r:8  p:12
 
   ────────────────────────────────────────────────────────
-  Cluster Fairshare Range
-  Highest  user04 (0.95)
-  Lowest   user09 (0.08)
+  Account Fairshare Range
+  Highest  bio (0.91)
+  Lowest   ling (0.12)
 ```
 
 Or run it directly: `scripts/slurm-popup.sh -u $USER`
