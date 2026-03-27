@@ -87,15 +87,21 @@ elif [ -n "$FILTER_ACCT" ]; then
     echo "${FILTER_ACCT}|user02|0.5100"
     echo "${FILTER_ACCT}|user03|0.8200"
 elif [ -n "$ALL" ]; then
+    echo "physics||0.6500"
     echo "physics|user01|0.7284"
     echo "physics|user02|0.5100"
     echo "physics|user03|0.8200"
+    echo "cs||0.8800"
     echo "cs|user04|0.9510"
     echo "cs|user05|0.3200"
+    echo "chem||0.2300"
     echo "chem|user06|0.1150"
     echo "chem|user07|0.4400"
+    echo "bio||0.9100"
     echo "bio|user08|0.8800"
+    echo "ling||0.1200"
     echo "ling|user09|0.0820"
+    echo "cibot||0.5000"
 fi
 SSHARE
 chmod +x "$MOCK_DIR/sshare"

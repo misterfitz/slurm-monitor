@@ -171,9 +171,9 @@ low = data.get("low_fs")
 if top and low:
     print()
     print(f"  {HR}")
-    print(f"  {DIM}Cluster Fairshare Range{RESET}")
-    print(f"  {GREEN}Highest{RESET}  {top['user']} ({top['fairshare']:.2f})")
-    print(f"  {RED}Lowest{RESET}   {low['user']} ({low['fairshare']:.2f})")
+    print(f"  {DIM}Account Fairshare Range{RESET}")
+    print(f"  {GREEN}Highest{RESET}  {top['account']} ({top['fairshare']:.2f})")
+    print(f"  {RED}Lowest{RESET}   {low['account']} ({low['fairshare']:.2f})")
 
 print()
 print(f"  {DIM}Press any key to close.{RESET}")

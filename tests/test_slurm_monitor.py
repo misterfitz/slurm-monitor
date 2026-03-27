@@ -214,12 +214,12 @@ class TestFormatLong:
 
     def test_with_extremes(self):
         data = _data(
-            top_fs={"user": "u44", "account": "ling", "fairshare": 0.98},
-            low_fs={"user": "u13", "account": "cs", "fairshare": 0.12},
+            top_fs={"account": "bio", "fairshare": 0.91},
+            low_fs={"account": "ling", "fairshare": 0.12},
         )
         out = slurm_monitor.format_long(data)
-        assert "hi:u44" in out
-        assert "lo:u13" in out
+        assert "hi:bio" in out
+        assert "lo:ling" in out
         assert "|" in out
 
     def test_empty(self):
