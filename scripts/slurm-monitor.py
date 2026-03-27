@@ -69,35 +69,53 @@ def get_queue_counts(qos: "Optional[str]" = None) -> dict:
     return counts
 
 
-def get_user_qos(user: str, account: Optional[str] = None) -> list:
-    """Get QOS associations for a user from sacctmgr.
+def get_user_qos(user: str, account: Optional[str] = None) -> dict:
+    """Get QOS info for a user from sacctmgr.
 
-    Returns a list of dicts: [{"qos": "normal", "account": "physics", ...}]
+    Returns {"default_qos": "normal", "allowed_qos": ["normal", "gpu", "high"],
+             "details": [{"account": "physics", "default_qos": "normal", ...}]}
     """
-    cmd = f"sacctmgr show assoc user={user} format=Account,QOS,MaxJobs,MaxSubmitJobs,Priority -P -n"
+    cmd = (
+        f"sacctmgr show assoc user={user} "
+        f"format=Account,DefaultQOS,QOS,MaxJobs,MaxSubmitJobs,Priority -P -n"
+    )
     if account:
         cmd += f" account={account}"
     out = run_slurm(cmd)
     if not out:
-        return []
+        return {}
 
-    assocs = []
+    result = {"default_qos": None, "allowed_qos": [], "details": []}
+    seen_qos = set()
+
     for line in out.split("\n"):
         parts = line.split("|")
-        if len(parts) >= 5:
-            qos_list = parts[1].strip()
-            if qos_list:
-                for qos_name in qos_list.split(","):
-                    qos_name = qos_name.strip()
-                    if qos_name:
-                        assocs.append({
-                            "account": parts[0].strip(),
-                            "qos": qos_name,
-                            "max_jobs": _safe_int(parts[2]) if parts[2].strip() else None,
-                            "max_submit": _safe_int(parts[3]) if parts[3].strip() else None,
-                            "priority": _safe_int(parts[4]) if parts[4].strip() else None,
-                        })
-    return assocs
+        if len(parts) < 6:
+            continue
+
+        acct = parts[0].strip()
+        default_qos = parts[1].strip() or None
+        qos_list_str = parts[2].strip()
+        allowed = [q.strip() for q in qos_list_str.split(",") if q.strip()] if qos_list_str else []
+
+        # Use the first association's default QOS (matching account takes priority)
+        if default_qos and result["default_qos"] is None:
+            result["default_qos"] = default_qos
+
+        for q in allowed:
+            seen_qos.add(q)
+
+        result["details"].append({
+            "account": acct,
+            "default_qos": default_qos,
+            "allowed_qos": allowed,
+            "max_jobs": _safe_int(parts[3]) if parts[3].strip() else None,
+            "max_submit": _safe_int(parts[4]) if parts[4].strip() else None,
+            "priority": _safe_int(parts[5]) if parts[5].strip() else None,
+        })
+
+    result["allowed_qos"] = sorted(seen_qos)
+    return result
 
 
 def get_job_qos(user: str) -> dict:
@@ -153,10 +171,11 @@ def get_user_info(user: str) -> dict | None:
         return None
 
     # QOS associations
-    qos_assocs = get_user_qos(user, info.get("account"))
-    if qos_assocs:
-        info["qos"] = [a["qos"] for a in qos_assocs]
-        info["qos_details"] = qos_assocs
+    qos_info = get_user_qos(user, info.get("account"))
+    if qos_info:
+        info["default_qos"] = qos_info.get("default_qos")
+        info["allowed_qos"] = qos_info.get("allowed_qos", [])
+        info["qos_details"] = qos_info.get("details", [])
 
     # Per-QOS job breakdown
     job_qos = get_job_qos(user)
@@ -332,13 +351,13 @@ def format_status(data: dict, color: bool = False, max_width: int = 0) -> str:
 
 
 def _active_qos_names(user_info: dict) -> list:
-    """Return QOS names that have active jobs, or all associated QOS if no jobs."""
+    """Return QOS names from running jobs, or the account default QOS."""
     job_qos = user_info.get("job_qos", {})
     if job_qos:
         return sorted(job_qos.keys())
-    qos_list = user_info.get("qos", [])
-    if qos_list:
-        return sorted(qos_list)
+    default = user_info.get("default_qos")
+    if default:
+        return [default]
     return []
 
 
@@ -363,8 +382,8 @@ def format_long(data: dict) -> str:
                 jq = job_qos[qname]
                 qos_parts.append(f"{qname}:r{jq['running']}p{jq['pending']}")
             seg += f" [{' '.join(qos_parts)}]"
-        elif u.get("qos"):
-            seg += f" qos:{','.join(sorted(u['qos']))}"
+        elif u.get("default_qos"):
+            seg += f" qos:{u['default_qos']}"
         parts.append(seg)
 
     if "account" in data and data["account"]:

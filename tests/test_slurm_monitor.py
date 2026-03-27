@@ -150,13 +150,17 @@ class TestFormatStatusQOS:
         out = slurm_monitor.format_status(data)
         assert "qos:gpu,normal" in out
 
-    def test_with_qos_assoc_no_jobs(self):
+    def test_with_default_qos_no_jobs(self):
         data = _data(user={
             "name": "u1", "fairshare": 0.82,
-            "qos": ["normal", "high"],
+            "default_qos": "normal",
+            "allowed_qos": ["normal", "high", "gpu"],
         })
         out = slurm_monitor.format_status(data)
-        assert "qos:high,normal" in out
+        assert "qos:normal" in out
+        # Should NOT show all allowed QOS
+        assert "high" not in out
+        assert "gpu" not in out
 
     def test_rank_with_total(self):
         data = _data(user={
@@ -197,14 +201,16 @@ class TestFormatLong:
         assert "gpu:r2p3" in out
         assert "normal:r5p10" in out
 
-    def test_with_qos_no_jobs(self):
+    def test_with_default_qos_no_jobs(self):
         data = _data(user={
             "name": "user01", "fairshare": 0.82,
             "running": 0, "pending": 0,
-            "qos": ["normal", "high"],
+            "default_qos": "normal",
+            "allowed_qos": ["normal", "high"],
         })
         out = slurm_monitor.format_long(data)
-        assert "qos:high,normal" in out
+        assert "qos:normal" in out
+        assert "high" not in out
 
     def test_with_extremes(self):
         data = _data(
@@ -268,13 +274,13 @@ class TestActiveQosNames:
         result = slurm_monitor._active_qos_names(info)
         assert result == ["gpu", "normal"]
 
-    def test_from_assoc(self):
-        info = {"qos": ["high", "normal"]}
+    def test_from_default_qos(self):
+        info = {"default_qos": "normal", "allowed_qos": ["normal", "high", "gpu"]}
         result = slurm_monitor._active_qos_names(info)
-        assert result == ["high", "normal"]
+        assert result == ["normal"]
 
     def test_job_qos_takes_precedence(self):
-        info = {"job_qos": {"gpu": {"running": 1, "pending": 0}}, "qos": ["high", "normal"]}
+        info = {"job_qos": {"gpu": {"running": 1, "pending": 0}}, "default_qos": "normal"}
         result = slurm_monitor._active_qos_names(info)
         assert result == ["gpu"]
 
