@@ -49,8 +49,8 @@ def _read_cache(cache_file):
 def _parse_status(text):
     """Parse a status string into components for highlight grouping.
 
-    Input:  'R:5k P:25k fs:0.82 #3'
-    Output: [('R:5k P:25k', None), ('fs:0.82', 0.82), ('#3', None)]
+    Input:  'R:5k P:25k fs:0.82 #3/25k qos:normal'
+    Output: [('R:5k P:25k', None), ('fs:0.82', 0.82), ('#3/25k qos:normal', None)]
     """
     parts = []
     fs_value = None

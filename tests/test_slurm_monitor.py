@@ -130,6 +130,43 @@ class TestFormatStatus:
         assert "fs:" not in out
 
 
+class TestFormatStatusQOS:
+    def test_with_qos_from_jobs(self):
+        data = _data(user={
+            "name": "u1", "fairshare": 0.82, "rank": 3, "total_pending": 500,
+            "job_qos": {"normal": {"running": 5, "pending": 10}},
+        })
+        out = slurm_monitor.format_status(data)
+        assert "qos:normal" in out
+
+    def test_with_multiple_qos(self):
+        data = _data(user={
+            "name": "u1", "fairshare": 0.82,
+            "job_qos": {
+                "gpu": {"running": 2, "pending": 3},
+                "normal": {"running": 5, "pending": 10},
+            },
+        })
+        out = slurm_monitor.format_status(data)
+        assert "qos:gpu,normal" in out
+
+    def test_with_qos_assoc_no_jobs(self):
+        data = _data(user={
+            "name": "u1", "fairshare": 0.82,
+            "qos": ["normal", "high"],
+        })
+        out = slurm_monitor.format_status(data)
+        assert "qos:high,normal" in out
+
+    def test_rank_with_total(self):
+        data = _data(user={
+            "name": "u1", "fairshare": 0.82,
+            "rank": 3, "total_pending": 25000,
+        })
+        out = slurm_monitor.format_status(data)
+        assert "#3/25k" in out
+
+
 class TestFormatLong:
     def test_basic(self):
         out = slurm_monitor.format_long(_data())
@@ -146,6 +183,28 @@ class TestFormatLong:
         assert "fs:0.82" in out
         assert "#3/" in out
         assert "r:10" in out
+
+    def test_with_qos_breakdown(self):
+        data = _data(user={
+            "name": "user01", "fairshare": 0.82,
+            "running": 7, "pending": 13,
+            "job_qos": {
+                "normal": {"running": 5, "pending": 10},
+                "gpu": {"running": 2, "pending": 3},
+            },
+        })
+        out = slurm_monitor.format_long(data)
+        assert "gpu:r2p3" in out
+        assert "normal:r5p10" in out
+
+    def test_with_qos_no_jobs(self):
+        data = _data(user={
+            "name": "user01", "fairshare": 0.82,
+            "running": 0, "pending": 0,
+            "qos": ["normal", "high"],
+        })
+        out = slurm_monitor.format_long(data)
+        assert "qos:high,normal" in out
 
     def test_with_extremes(self):
         data = _data(
@@ -203,6 +262,27 @@ class TestCLI:
 # ── Powerline segment tests ──────────────────────────────────────
 
 
+class TestActiveQosNames:
+    def test_from_job_qos(self):
+        info = {"job_qos": {"gpu": {"running": 1, "pending": 0}, "normal": {"running": 0, "pending": 2}}}
+        result = slurm_monitor._active_qos_names(info)
+        assert result == ["gpu", "normal"]
+
+    def test_from_assoc(self):
+        info = {"qos": ["high", "normal"]}
+        result = slurm_monitor._active_qos_names(info)
+        assert result == ["high", "normal"]
+
+    def test_job_qos_takes_precedence(self):
+        info = {"job_qos": {"gpu": {"running": 1, "pending": 0}}, "qos": ["high", "normal"]}
+        result = slurm_monitor._active_qos_names(info)
+        assert result == ["gpu"]
+
+    def test_empty(self):
+        result = slurm_monitor._active_qos_names({})
+        assert result == []
+
+
 class TestPowerlineReadCache:
     def test_reads_file(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".cache", delete=False) as f:
@@ -242,6 +322,16 @@ class TestPowerlineParseStatus:
         parts = _parse_status("R:5k P:25k")
         assert len(parts) == 1
         assert parts[0][1] is None
+
+    def test_with_qos(self):
+        parts = _parse_status("R:5k P:25k fs:0.82 #3/25k qos:normal")
+        assert len(parts) == 3
+        assert parts[1][1] == pytest.approx(0.82)
+        assert "qos:normal" in parts[2][0]
+
+    def test_with_rank_and_total(self):
+        parts = _parse_status("R:5k P:25k fs:0.82 #3/25k")
+        assert "#3/25k" in parts[2][0]
 
 
 class TestPowerlineFsHighlight:

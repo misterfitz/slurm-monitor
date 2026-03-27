@@ -11,6 +11,8 @@
 # Environment:
 #   SLURM_MONITOR_CACHE_TTL  Cache lifetime in seconds (default: 10)
 #   SLURM_MONITOR_CMD        Override the monitor command path
+#
+# All flags (like -u, -q, --color) are passed through to slurm-monitor.
 
 set -euo pipefail
 
