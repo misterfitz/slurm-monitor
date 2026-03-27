@@ -29,6 +29,7 @@ slurm_user=$(get_tmux_option "@slurm-monitor-user" "")
 slurm_color=$(get_tmux_option "@slurm-monitor-color" "off")
 slurm_interval=$(get_tmux_option "@slurm-monitor-interval" "10")
 slurm_position=$(get_tmux_option "@slurm-monitor-position" "right")
+slurm_popup_key=$(get_tmux_option "@slurm-monitor-popup" "S")
 
 # Build the command
 cmd="$CURRENT_DIR/scripts/slurm-status.sh"
@@ -54,4 +55,15 @@ if [ "$slurm_position" = "left" ]; then
 else
     current=$(tmux show-option -gqv "status-right")
     tmux set-option -g "status-right" "$interpolation $current"
+fi
+
+# Bind popup key (prefix + S by default)
+popup_cmd="$CURRENT_DIR/scripts/slurm-popup.sh"
+popup_args=""
+if [ -n "$slurm_user" ]; then
+    popup_args="$popup_args -u $slurm_user"
+fi
+
+if [ -n "$slurm_popup_key" ]; then
+    tmux bind-key "$slurm_popup_key" display-popup -E -w 60 -h 22 "$popup_cmd $popup_args"
 fi
