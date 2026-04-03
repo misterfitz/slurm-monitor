@@ -23,7 +23,7 @@ jobs:
         run: |
           docker run -d --name slurm-test \
             --hostname linux \
-            misterfitz/slurm:base-root \
+            misterfitz/slurm:base-root-25.05-el9 \
             bash -c '/etc/startup.sh && tail -f /dev/null'
 
           # Wait for Slurm daemons to be ready
