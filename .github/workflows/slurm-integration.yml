@@ -19,19 +19,11 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Build Slurm image from misterfitz/docker-slurm
-        run: |
-          git clone --depth 1 https://github.com/misterfitz/docker-slurm.git /tmp/docker-slurm
-          cd /tmp/docker-slurm
-          docker compose build build-full-root
-
       - name: Start Slurm container
         run: |
-          cd /tmp/docker-slurm
-          # Run with a long-lived command so container stays up
           docker run -d --name slurm-test \
             --hostname linux \
-            nathanhess/slurm:full-root \
+            nathanhess/slurm:full \
             bash -c '/etc/startup.sh && tail -f /dev/null'
 
           # Wait for Slurm daemons to be ready
