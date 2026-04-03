@@ -30,6 +30,8 @@ slurm_color=$(get_tmux_option "@slurm-monitor-color" "off")
 slurm_interval=$(get_tmux_option "@slurm-monitor-interval" "10")
 slurm_position=$(get_tmux_option "@slurm-monitor-position" "right")
 slurm_popup_key=$(get_tmux_option "@slurm-monitor-popup" "S")
+slurm_alert=$(get_tmux_option "@slurm-monitor-alert" "off")
+slurm_cluster=$(get_tmux_option "@slurm-monitor-cluster" "")
 
 # Build the command
 cmd="$CURRENT_DIR/scripts/slurm-status.sh"
@@ -41,6 +43,10 @@ fi
 
 if [ "$slurm_color" = "on" ]; then
     args="$args --color"
+fi
+
+if [ -n "$slurm_cluster" ]; then
+    args="$args -M $slurm_cluster"
 fi
 
 export SLURM_MONITOR_CACHE_TTL="$slurm_interval"
@@ -63,7 +69,19 @@ popup_args=""
 if [ -n "$slurm_user" ]; then
     popup_args="$popup_args -u $slurm_user"
 fi
+if [ -n "$slurm_cluster" ]; then
+    popup_args="$popup_args -M $slurm_cluster"
+fi
 
 if [ -n "$slurm_popup_key" ]; then
-    tmux bind-key "$slurm_popup_key" display-popup -E -w 60 -h 22 "$popup_cmd $popup_args"
+    tmux bind-key "$slurm_popup_key" display-popup -E -w 62 -h 40 "$popup_cmd $popup_args"
+fi
+
+# Job failure alert watcher
+if [ "$slurm_alert" = "on" ] && [ -n "$slurm_user" ]; then
+    alert_script="$CURRENT_DIR/scripts/slurm-alert.sh"
+    if [ -x "$alert_script" ]; then
+        # Run alert watcher in background
+        "$alert_script" -u "$slurm_user" -i "$slurm_interval" &
+    fi
 fi

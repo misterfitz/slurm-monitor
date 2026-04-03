@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -24,8 +25,15 @@ import time
 from typing import Optional
 
 
+_cluster: Optional[str] = None
+
+
 def run_slurm(cmd: str) -> str | None:
     """Run a Slurm command and return stdout, or None on failure."""
+    if _cluster:
+        # Insert -M cluster after the command name for multi-cluster support
+        parts = cmd.split(None, 1)
+        cmd = f"{parts[0]} -M {_cluster}" + (f" {parts[1]}" if len(parts) > 1 else "")
     try:
         result = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=10,
@@ -259,6 +267,227 @@ def get_fairshare_extremes() -> dict:
     return {"top_fs": top, "low_fs": low}
 
 
+def get_pending_details(user: str) -> list:
+    """Get pending job details including estimated start time and reason.
+
+    Returns [{"job_id": "123", "name": "train", "reason": "Priority",
+              "start_time": "2025-01-15T12:00:00"}]
+    """
+    out = run_slurm(
+        f"squeue -u {user} -h -t PENDING "
+        f"-o '%i|%j|%r|%S' --sort=-p"
+    )
+    if not out:
+        return []
+
+    jobs = []
+    for line in out.split("\n"):
+        parts = line.strip().split("|")
+        if len(parts) >= 4:
+            start = parts[3].strip()
+            if start in ("N/A", "n/a", ""):
+                start = None
+            jobs.append({
+                "job_id": parts[0].strip(),
+                "name": parts[1].strip(),
+                "reason": parts[2].strip(),
+                "start_time": start,
+            })
+
+    return jobs
+
+
+def get_gpu_usage(user: str) -> dict:
+    """Get GPU allocation info for a user's running jobs.
+
+    Returns {"allocated": 4, "jobs": [{"job_id": "123", "name": "train", "gpus": 2}]}
+    """
+    out = run_slurm(
+        f"squeue -u {user} -h -t RUNNING "
+        f"-o '%i|%j|%b' --sort=-p"
+    )
+    if not out:
+        return {"allocated": 0, "jobs": []}
+
+    total_gpus = 0
+    jobs = []
+    for line in out.split("\n"):
+        parts = line.strip().split("|")
+        if len(parts) >= 3:
+            gres = parts[2].strip()
+            gpus = _parse_gres_gpus(gres)
+            if gpus > 0:
+                jobs.append({
+                    "job_id": parts[0].strip(),
+                    "name": parts[1].strip(),
+                    "gpus": gpus,
+                })
+                total_gpus += gpus
+
+    return {"allocated": total_gpus, "jobs": jobs}
+
+
+def _parse_gres_gpus(gres: str) -> int:
+    """Parse GPU count from GRES string like 'gpu:4' or 'gpu:a100:2'."""
+    if not gres or gres in ("(null)", "N/A"):
+        return 0
+    import re
+    match = re.search(r"gpu(?::[^:]+)?:(\d+)", gres)
+    if match:
+        return int(match.group(1))
+    if gres == "gpu" or gres.startswith("gpu:"):
+        # bare "gpu" or "gpu:type" without count means 1
+        parts = gres.split(":")
+        if len(parts) <= 2 and not parts[-1].isdigit():
+            return 1
+    return 0
+
+
+def get_job_history(user: str, hours: int = 24) -> dict:
+    """Get job completion history over the last N hours for sparkline.
+
+    Returns {"buckets": [{"hour": 0, "completed": 5, "failed": 1}, ...],
+             "total_completed": 40, "total_failed": 3}
+    """
+    out = run_slurm(
+        f"sacct -u {user} -X -n -P "
+        f"--starttime=now-{hours}hours "
+        f"--format=State,End"
+    )
+    if not out:
+        return {"buckets": [], "total_completed": 0, "total_failed": 0}
+
+    from datetime import datetime
+    now = datetime.now()
+    buckets = [{"hour": i, "completed": 0, "failed": 0} for i in range(hours)]
+    total_completed = 0
+    total_failed = 0
+    failed_states = {"FAILED", "TIMEOUT", "OOM", "NODE_FAIL", "CANCELLED", "PREEMPTED"}
+
+    for line in out.split("\n"):
+        parts = line.split("|")
+        if len(parts) < 2:
+            continue
+        state = parts[0].strip().split(" ")[0].upper()
+        end_str = parts[1].strip()
+        if not end_str or end_str in ("Unknown", "None", ""):
+            continue
+
+        try:
+            end_time = datetime.strptime(end_str, "%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            continue
+
+        delta = now - end_time
+        hours_ago = int(delta.total_seconds() / 3600)
+        if 0 <= hours_ago < hours:
+            bucket_idx = hours - 1 - hours_ago  # 0=oldest, hours-1=most recent
+            if state == "COMPLETED":
+                buckets[bucket_idx]["completed"] += 1
+                total_completed += 1
+            elif state in failed_states:
+                buckets[bucket_idx]["failed"] += 1
+                total_failed += 1
+
+    return {
+        "buckets": buckets,
+        "total_completed": total_completed,
+        "total_failed": total_failed,
+    }
+
+
+def make_sparkline(buckets: list, key: str = "completed") -> str:
+    """Create a sparkline string from bucket data.
+
+    Uses Unicode block characters: ▁▂▃▄▅▆▇█
+    """
+    chars = "▁▁▂▃▄▅▆▇█"
+    values = [b.get(key, 0) for b in buckets]
+    if not values:
+        return ""
+    max_val = max(values) or 1
+    return "".join(chars[min(int(v / max_val * 8), 8)] for v in values)
+
+
+def get_usage_budget(user: str, account: Optional[str] = None) -> dict | None:
+    """Get usage budget info from sreport — hours used this month.
+
+    Returns {"account": "physics", "used_hours": 1234.5, "user_hours": 500.2}
+    """
+    # Get account from sshare if not provided
+    if not account:
+        out = run_slurm(
+            f"sshare -u {user} -U -P -h --format=Account,User"
+        )
+        if out:
+            for line in out.split("\n"):
+                parts = line.split("|")
+                if len(parts) >= 2 and parts[1].strip() == user:
+                    account = parts[0].strip()
+                    break
+    if not account:
+        return None
+
+    # Account usage this month
+    out = run_slurm(
+        f"sreport cluster AccountUtilizationByUser account={account} "
+        f"-t Hours -P -n --parsable2 start=month"
+    )
+    if not out:
+        return None
+
+    result = {"account": account, "used_hours": 0, "user_hours": 0}
+    for line in out.split("\n"):
+        parts = line.split("|")
+        if len(parts) < 4:
+            continue
+        login = parts[1].strip()
+        try:
+            hours = float(parts[3].strip())
+        except (ValueError, IndexError):
+            continue
+        if not login or login == account:
+            result["used_hours"] += hours
+        if login == user:
+            result["user_hours"] = hours
+
+    return result if result["used_hours"] > 0 else None
+
+
+def get_failed_jobs(user: str, since_minutes: int = 60) -> list:
+    """Get recently failed/timed-out/OOM jobs for a user via sacct.
+
+    Returns a list of dicts: [{"job_id": "123", "name": "train", "state": "FAILED",
+                                "exit_code": "1:0", "end_time": "2025-01-15T10:30:00"}]
+    """
+    out = run_slurm(
+        f"sacct -u {user} -X -n -P "
+        f"--starttime=now-{since_minutes}minutes "
+        f"--state=FAILED,TIMEOUT,CANCELLED,OOM,NODE_FAIL,PREEMPTED "
+        f"--format=JobID,JobName%30,State,ExitCode,End"
+    )
+    if not out:
+        return []
+
+    jobs = []
+    for line in out.split("\n"):
+        parts = line.split("|")
+        if len(parts) >= 5:
+            state = parts[2].strip()
+            # Skip jobs cancelled by user themselves (CANCELLED by 0 = system)
+            if state.startswith("CANCELLED by") and "by 0" not in state:
+                continue
+            jobs.append({
+                "job_id": parts[0].strip(),
+                "name": parts[1].strip(),
+                "state": state.split(" ")[0],  # normalize "CANCELLED by ..." to "CANCELLED"
+                "exit_code": parts[3].strip(),
+                "end_time": parts[4].strip(),
+            })
+
+    return jobs
+
+
 def get_account_info(account: str) -> dict | None:
     """Get summary info for a specific account."""
     out = run_slurm(
@@ -346,6 +575,28 @@ def format_status(data: dict, color: bool = False, max_width: int = 0) -> str:
 
         parts.append(segment)
 
+    gpu = data.get("gpu")
+    if gpu and gpu.get("allocated", 0) > 0:
+        g = gpu["allocated"]
+        if color:
+            parts.append(f"#[fg=cyan]gpu:{g}#[default]")
+        else:
+            parts.append(f"gpu:{g}")
+
+    failed = data.get("failed_jobs", [])
+    if failed:
+        count = len(failed)
+        if color:
+            parts.append(f"#[fg=red]!{count}#[default]")
+        else:
+            parts.append(f"!{count}")
+
+    history = data.get("history")
+    if history and (history["total_completed"] > 0 or history["total_failed"] > 0):
+        spark = make_sparkline(history["buckets"], "completed")
+        if spark.strip():
+            parts.append(spark)
+
     if "account" in data and data["account"]:
         a = data["account"]
         parts.append(f"{a['name']} fs:{a['fairshare']:.2f}")
@@ -401,6 +652,24 @@ def format_long(data: dict) -> str:
             seg += f" (r:{a.get('running', 0)} p:{a.get('pending', 0)})"
         parts.append(seg)
 
+    gpu = data.get("gpu")
+    if gpu and gpu.get("allocated", 0) > 0:
+        parts.append(f"gpu:{gpu['allocated']}")
+
+    failed = data.get("failed_jobs", [])
+    if failed:
+        parts.append(f"FAIL:{len(failed)}")
+
+    budget = data.get("budget")
+    if budget:
+        parts.append(f"used:{budget['user_hours']:.0f}h/{budget['used_hours']:.0f}h")
+
+    history = data.get("history")
+    if history and (history["total_completed"] > 0 or history["total_failed"] > 0):
+        spark = make_sparkline(history["buckets"], "completed")
+        if spark.strip():
+            parts.append(spark)
+
     if "top_fs" in data and "low_fs" in data:
         top = data["top_fs"]
         low = data["low_fs"]
@@ -430,14 +699,39 @@ def build_data(
     user: Optional[str] = None,
     account: Optional[str] = None,
     qos: Optional[str] = None,
+    cluster: Optional[str] = None,
 ) -> dict:
     """Collect all status data."""
     data = get_queue_counts(qos=qos)
+
+    if cluster:
+        data["cluster"] = cluster
 
     if user:
         data["user"] = get_user_info(user)
         if data["user"]:
             data["user"]["name"] = user
+
+        failed = get_failed_jobs(user)
+        if failed:
+            data["failed_jobs"] = failed
+
+        pending = get_pending_details(user)
+        if pending:
+            data["pending_details"] = pending
+
+        gpu = get_gpu_usage(user)
+        if gpu["allocated"] > 0:
+            data["gpu"] = gpu
+
+        history = get_job_history(user)
+        if history["total_completed"] > 0 or history["total_failed"] > 0:
+            data["history"] = history
+
+        user_account = data["user"].get("account") if data.get("user") else None
+        budget = get_usage_budget(user, account=user_account)
+        if budget:
+            data["budget"] = budget
 
     if account:
         data["account"] = get_account_info(account)
@@ -446,6 +740,50 @@ def build_data(
     data.update(extremes)
 
     return data
+
+
+def _check_alerts(
+    data: dict,
+    last_fail_count: int,
+    alert_cmd: Optional[str] = None,
+    bell: bool = False,
+) -> int:
+    """Check for new failures and fire alerts. Returns updated fail count."""
+    failed = data.get("failed_jobs", [])
+    count = len(failed)
+    if count <= last_fail_count:
+        return count
+
+    new_count = count - last_fail_count
+    latest = failed[0] if failed else {}
+    name = latest.get("name", "?")
+    state = latest.get("state", "FAILED")
+
+    if new_count == 1:
+        msg = f"Slurm: job '{name}' {state}"
+    else:
+        msg = f"Slurm: {new_count} new failures (latest: {name} {state})"
+
+    if bell:
+        sys.stderr.write("\a")
+        sys.stderr.flush()
+
+    if alert_cmd:
+        env = os.environ.copy()
+        env["SLURM_ALERT_MESSAGE"] = msg
+        env["SLURM_ALERT_COUNT"] = str(new_count)
+        env["SLURM_ALERT_JOB_NAME"] = name
+        env["SLURM_ALERT_JOB_STATE"] = state
+        env["SLURM_ALERT_JOB_ID"] = latest.get("job_id", "")
+        try:
+            subprocess.Popen(
+                alert_cmd, shell=True, env=env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            pass
+
+    return count
 
 
 def main():
@@ -485,8 +823,18 @@ tmux.conf:
                         help="Filter by QOS name")
     parser.add_argument("--max-width", type=int, default=0,
                         help="Truncate output to N characters")
+    parser.add_argument("-M", "--cluster", default=None,
+                        help="Target a specific Slurm cluster")
+    parser.add_argument("--alert-cmd", default=None,
+                        help="Command to run on new failures (e.g. notify-send, curl)")
+    parser.add_argument("--bell", action="store_true",
+                        help="Ring terminal bell on new failures")
 
     args = parser.parse_args()
+
+    global _cluster
+    if args.cluster:
+        _cluster = args.cluster
 
     if not check_slurm_available():
         if args.json:
@@ -494,6 +842,9 @@ tmux.conf:
         else:
             print("slurm:err")
         sys.exit(1)
+
+    last_fail_count = 0
+    alert_cmd = args.alert_cmd or os.environ.get("SLURM_MONITOR_ALERT_CMD")
 
     if args.watch:
         try:
@@ -507,6 +858,9 @@ tmux.conf:
                     line = format_status(data, color=args.color, max_width=args.max_width)
                 sys.stdout.write(f"\r\033[K{line}")
                 sys.stdout.flush()
+                last_fail_count = _check_alerts(
+                    data, last_fail_count, alert_cmd, bell=args.bell,
+                )
                 time.sleep(args.refresh)
         except KeyboardInterrupt:
             sys.stdout.write("\n")
@@ -518,6 +872,7 @@ tmux.conf:
             print(format_long(data))
         else:
             print(format_status(data, color=args.color, max_width=args.max_width))
+        _check_alerts(data, 0, alert_cmd, bell=args.bell)
 
 
 if __name__ == "__main__":

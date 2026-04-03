@@ -30,12 +30,15 @@ let g:loaded_slurm_monitor = 1
 " g:slurm_monitor_user        — user to query (triggers slurm-status.sh if cache missing)
 " g:slurm_monitor_qos         — QOS name to filter by (optional)
 " g:slurm_monitor_fallback    — text to show when no data (default: '')
+" g:slurm_monitor_alert       — show popup on job failures: 0=off, 1=on (default: 0)
 
 let s:cache_file = get(g:, 'slurm_monitor_cache_file',
     \ '/tmp/slurm-monitor-' . $USER . '.cache')
 let s:refresh_ms = get(g:, 'slurm_monitor_refresh', 10000)
 let s:fallback = get(g:, 'slurm_monitor_fallback', '')
+let s:alert = get(g:, 'slurm_monitor_alert', 0)
 let s:cached_value = s:fallback
+let s:last_fail_count = 0
 
 function! SlurmStatus() abort
     return s:cached_value
@@ -79,6 +82,53 @@ function! s:UpdateSlurmCache() abort
     let s:cached_value = s:fallback
 endfunction
 
+function! s:CheckSlurmFailures() abort
+    if !s:alert
+        return
+    endif
+    let l:json_file = s:cache_file . '.json'
+    if !filereadable(l:json_file)
+        return
+    endif
+    let l:content = join(readfile(l:json_file), '')
+    if len(l:content) == 0
+        return
+    endif
+    try
+        let l:data = json_decode(l:content)
+    catch
+        return
+    endtry
+    let l:failed = get(l:data, 'failed_jobs', [])
+    let l:count = len(l:failed)
+    if l:count > s:last_fail_count && l:count > 0
+        let l:new = l:count - s:last_fail_count
+        if l:new == 1 && len(l:failed) > 0
+            let l:name = get(l:failed[0], 'name', '?')
+            let l:state = get(l:failed[0], 'state', 'FAILED')
+            let l:msg = 'Slurm: job "' . l:name . '" ' . l:state
+        else
+            let l:msg = 'Slurm: ' . l:new . ' new job failure(s)'
+        endif
+        if has('nvim')
+            lua vim.notify(vim.api.nvim_eval('l:msg'), vim.log.levels.ERROR)
+        elseif has('popupwin')
+            call popup_notification(l:msg, #{
+                \ time: 5000,
+                \ highlight: 'ErrorMsg',
+                \ border: [],
+                \ padding: [0, 1, 0, 1],
+                \ pos: 'topright',
+                \ col: &columns,
+                \ line: 1,
+                \ })
+        else
+            echohl ErrorMsg | echom l:msg | echohl None
+        endif
+    endif
+    let s:last_fail_count = l:count
+endfunction
+
 " Initial load
 call s:UpdateSlurmCache()
 
@@ -86,6 +136,7 @@ call s:UpdateSlurmCache()
 if has('timers')
     function! s:TimerRefresh(timer) abort
         call s:UpdateSlurmCache()
+        call s:CheckSlurmFailures()
         redrawstatus
     endfunction
 

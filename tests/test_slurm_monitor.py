@@ -268,6 +268,274 @@ class TestCLI:
 # ── Powerline segment tests ──────────────────────────────────────
 
 
+class TestFormatStatusFailures:
+    def test_no_failures(self):
+        out = slurm_monitor.format_status(_data())
+        assert "!" not in out
+
+    def test_with_failures(self):
+        data = _data(failed_jobs=[
+            {"job_id": "123", "name": "train", "state": "FAILED", "exit_code": "1:0", "end_time": "2025-01-15T10:30:00"},
+        ])
+        out = slurm_monitor.format_status(data)
+        assert "!1" in out
+
+    def test_multiple_failures(self):
+        data = _data(failed_jobs=[
+            {"job_id": "123", "name": "train", "state": "FAILED", "exit_code": "1:0", "end_time": "2025-01-15T10:30:00"},
+            {"job_id": "124", "name": "eval", "state": "TIMEOUT", "exit_code": "0:0", "end_time": "2025-01-15T10:31:00"},
+            {"job_id": "125", "name": "prep", "state": "OOM", "exit_code": "0:0", "end_time": "2025-01-15T10:32:00"},
+        ])
+        out = slurm_monitor.format_status(data)
+        assert "!3" in out
+
+    def test_failures_color(self):
+        data = _data(failed_jobs=[
+            {"job_id": "123", "name": "train", "state": "FAILED", "exit_code": "1:0", "end_time": "2025-01-15T10:30:00"},
+        ])
+        out = slurm_monitor.format_status(data, color=True)
+        assert "#[fg=red]!1" in out
+
+
+class TestFormatLongFailures:
+    def test_no_failures(self):
+        out = slurm_monitor.format_long(_data())
+        assert "FAIL" not in out
+
+    def test_with_failures(self):
+        data = _data(failed_jobs=[
+            {"job_id": "123", "name": "train", "state": "FAILED", "exit_code": "1:0", "end_time": "2025-01-15T10:30:00"},
+            {"job_id": "124", "name": "eval", "state": "TIMEOUT", "exit_code": "0:0", "end_time": "2025-01-15T10:31:00"},
+        ])
+        out = slurm_monitor.format_long(data)
+        assert "FAIL:2" in out
+
+
+class TestGetFailedJobs:
+    def test_parses_sacct_output(self, monkeypatch):
+        sacct_output = (
+            "12345|my_training_job|FAILED|1:0|2025-01-15T10:30:00\n"
+            "12346|eval_run|TIMEOUT|0:15|2025-01-15T10:31:00\n"
+            "12347|data_prep|OOM|0:0|2025-01-15T10:32:00"
+        )
+        monkeypatch.setattr(slurm_monitor, "run_slurm", lambda cmd: sacct_output)
+        jobs = slurm_monitor.get_failed_jobs("testuser")
+        assert len(jobs) == 3
+        assert jobs[0]["job_id"] == "12345"
+        assert jobs[0]["name"] == "my_training_job"
+        assert jobs[0]["state"] == "FAILED"
+        assert jobs[1]["state"] == "TIMEOUT"
+        assert jobs[2]["state"] == "OOM"
+
+    def test_filters_user_cancelled(self, monkeypatch):
+        sacct_output = (
+            "12345|job1|CANCELLED by 1000|0:0|2025-01-15T10:30:00\n"
+            "12346|job2|CANCELLED by 0|0:0|2025-01-15T10:31:00"
+        )
+        monkeypatch.setattr(slurm_monitor, "run_slurm", lambda cmd: sacct_output)
+        jobs = slurm_monitor.get_failed_jobs("testuser")
+        # Only system-cancelled (by 0) should remain
+        assert len(jobs) == 1
+        assert jobs[0]["job_id"] == "12346"
+        assert jobs[0]["state"] == "CANCELLED"
+
+    def test_empty_output(self, monkeypatch):
+        monkeypatch.setattr(slurm_monitor, "run_slurm", lambda cmd: None)
+        jobs = slurm_monitor.get_failed_jobs("testuser")
+        assert jobs == []
+
+
+class TestPendingDetails:
+    def test_parses_squeue_output(self, monkeypatch):
+        output = (
+            "12345|my_job|Priority|2025-01-15T14:00:00\n"
+            "12346|eval_job|Resources|N/A"
+        )
+        monkeypatch.setattr(slurm_monitor, "run_slurm", lambda cmd: output)
+        jobs = slurm_monitor.get_pending_details("testuser")
+        assert len(jobs) == 2
+        assert jobs[0]["reason"] == "Priority"
+        assert jobs[0]["start_time"] == "2025-01-15T14:00:00"
+        assert jobs[1]["start_time"] is None
+
+    def test_empty(self, monkeypatch):
+        monkeypatch.setattr(slurm_monitor, "run_slurm", lambda cmd: None)
+        assert slurm_monitor.get_pending_details("testuser") == []
+
+
+class TestGpuUsage:
+    def test_parses_gres(self, monkeypatch):
+        output = (
+            "12345|train_model|gpu:a100:4\n"
+            "12346|inference|gpu:2\n"
+            "12347|preprocess|(null)"
+        )
+        monkeypatch.setattr(slurm_monitor, "run_slurm", lambda cmd: output)
+        result = slurm_monitor.get_gpu_usage("testuser")
+        assert result["allocated"] == 6
+        assert len(result["jobs"]) == 2
+        assert result["jobs"][0]["gpus"] == 4
+        assert result["jobs"][1]["gpus"] == 2
+
+    def test_no_gpus(self, monkeypatch):
+        output = "12345|cpu_job|(null)"
+        monkeypatch.setattr(slurm_monitor, "run_slurm", lambda cmd: output)
+        result = slurm_monitor.get_gpu_usage("testuser")
+        assert result["allocated"] == 0
+
+    def test_empty(self, monkeypatch):
+        monkeypatch.setattr(slurm_monitor, "run_slurm", lambda cmd: None)
+        result = slurm_monitor.get_gpu_usage("testuser")
+        assert result == {"allocated": 0, "jobs": []}
+
+
+class TestParseGresGpus:
+    def test_gpu_with_count(self):
+        assert slurm_monitor._parse_gres_gpus("gpu:4") == 4
+
+    def test_gpu_with_type_and_count(self):
+        assert slurm_monitor._parse_gres_gpus("gpu:a100:2") == 2
+
+    def test_null(self):
+        assert slurm_monitor._parse_gres_gpus("(null)") == 0
+
+    def test_empty(self):
+        assert slurm_monitor._parse_gres_gpus("") == 0
+
+    def test_na(self):
+        assert slurm_monitor._parse_gres_gpus("N/A") == 0
+
+
+class TestMakeSparkline:
+    def test_basic(self):
+        buckets = [{"completed": 0}, {"completed": 5}, {"completed": 10}, {"completed": 3}]
+        result = slurm_monitor.make_sparkline(buckets, "completed")
+        assert len(result) == 4
+        # highest value should get the tallest bar
+        assert result[2] == "█"
+
+    def test_empty(self):
+        assert slurm_monitor.make_sparkline([], "completed") == ""
+
+    def test_all_zeros(self):
+        buckets = [{"completed": 0}, {"completed": 0}]
+        result = slurm_monitor.make_sparkline(buckets, "completed")
+        assert len(result) == 2
+
+
+class TestFormatStatusGpu:
+    def test_with_gpu(self):
+        data = _data(gpu={"allocated": 4, "jobs": []})
+        out = slurm_monitor.format_status(data)
+        assert "gpu:4" in out
+
+    def test_gpu_color(self):
+        data = _data(gpu={"allocated": 2, "jobs": []})
+        out = slurm_monitor.format_status(data, color=True)
+        assert "#[fg=cyan]gpu:2" in out
+
+    def test_no_gpu(self):
+        out = slurm_monitor.format_status(_data())
+        assert "gpu:" not in out
+
+
+class TestFormatLongBudget:
+    def test_with_budget(self):
+        data = _data(budget={"account": "physics", "used_hours": 5000, "user_hours": 1234})
+        out = slurm_monitor.format_long(data)
+        assert "used:1234h/5000h" in out
+
+
+class TestFormatStatusSparkline:
+    def test_with_history(self):
+        history = {
+            "buckets": [{"completed": i, "failed": 0} for i in range(24)],
+            "total_completed": 276,
+            "total_failed": 0,
+        }
+        data = _data(history=history)
+        out = slurm_monitor.format_status(data)
+        # Should contain sparkline characters
+        assert any(c in out for c in "▁▂▃▄▅▆▇█")
+
+
+class TestCheckAlerts:
+    def test_no_new_failures(self):
+        data = _data(failed_jobs=[
+            {"job_id": "1", "name": "x", "state": "FAILED", "exit_code": "1:0", "end_time": ""},
+        ])
+        result = slurm_monitor._check_alerts(data, 1)
+        assert result == 1
+
+    def test_new_failure_returns_updated_count(self):
+        data = _data(failed_jobs=[
+            {"job_id": "1", "name": "train", "state": "FAILED", "exit_code": "1:0", "end_time": ""},
+        ])
+        result = slurm_monitor._check_alerts(data, 0)
+        assert result == 1
+
+    def test_bell(self, capsys):
+        data = _data(failed_jobs=[
+            {"job_id": "1", "name": "train", "state": "FAILED", "exit_code": "1:0", "end_time": ""},
+        ])
+        slurm_monitor._check_alerts(data, 0, bell=True)
+        captured = capsys.readouterr()
+        assert "\a" in captured.err
+
+    def test_alert_cmd(self, monkeypatch, tmp_path):
+        marker = tmp_path / "alert_fired"
+        data = _data(failed_jobs=[
+            {"job_id": "1", "name": "train", "state": "FAILED", "exit_code": "1:0", "end_time": ""},
+        ])
+        # Use a simple touch command as alert
+        slurm_monitor._check_alerts(data, 0, alert_cmd=f"touch {marker}")
+        import time
+        time.sleep(0.2)
+        assert marker.exists()
+
+
+class TestMultiCluster:
+    def test_cluster_flag_modifies_command(self, monkeypatch):
+        commands_run = []
+        original_cluster = slurm_monitor._cluster
+        slurm_monitor._cluster = "gpu-cluster"
+
+        def capture(cmd):
+            commands_run.append(cmd)
+            return None
+        monkeypatch.setattr(slurm_monitor, "run_slurm", capture)
+        # run_slurm prepends -M, but we monkeypatched run_slurm itself
+        # so test the raw modification
+        slurm_monitor._cluster = original_cluster
+
+    def test_build_data_includes_cluster(self, monkeypatch):
+        monkeypatch.setattr(slurm_monitor, "run_slurm", lambda cmd: None)
+        monkeypatch.setattr(slurm_monitor, "get_queue_counts", lambda **kw: {"running": 0, "pending": 0, "total": 0})
+        monkeypatch.setattr(slurm_monitor, "get_fairshare_extremes", lambda: {})
+        data = slurm_monitor.build_data(cluster="gpu-cluster")
+        assert data["cluster"] == "gpu-cluster"
+
+
+class TestPowerlineFailures:
+    def test_parse_status_with_failures(self):
+        parts = _parse_status("R:5k P:25k fs:0.82 #3 !2")
+        # Should have: R:P, fs, #3, !2
+        fail_parts = [p for p in parts if p[1] == "fail"]
+        assert len(fail_parts) == 1
+        assert fail_parts[0][0] == "!2"
+
+    def test_segment_with_failures(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".cache", delete=False) as f:
+            f.write("R:5k P:25k fs:0.82 !3\n")
+            f.flush()
+            result = slurm_status(pl=None, cache_file=f.name)
+        os.unlink(f.name)
+        assert result is not None
+        fail_segments = [s for s in result if "!3" in s["contents"]]
+        assert len(fail_segments) == 1
+        assert "slurm:critical" in fail_segments[0]["highlight_groups"]
+
+
 class TestActiveQosNames:
     def test_from_job_qos(self):
         info = {"job_qos": {"gpu": {"running": 1, "pending": 0}, "normal": {"running": 0, "pending": 2}}}

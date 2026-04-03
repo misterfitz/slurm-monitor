@@ -82,8 +82,10 @@ def bar(val, max_val, width=20):
     filled = min(filled, width)
     return f"{GREEN}{'█' * filled}{DIM}{'░' * (width - filled)}{RESET}"
 
+cluster = data.get("cluster")
+title = f"Slurm Cluster Status" + (f" ({cluster})" if cluster else "")
 print()
-print(f"  {BOLD}Slurm Cluster Status{RESET}")
+print(f"  {BOLD}{title}{RESET}")
 print(f"  {HR}")
 
 # Cluster overview
@@ -149,6 +151,76 @@ if user:
             active = f"{CYAN}{qname}{RESET}" if default_qos and qname == default_qos else qname
             print(f"    {active:30s}  r:{GREEN}{jr}{RESET}  p:{jp}")
 
+# GPU usage
+gpu = data.get("gpu")
+if gpu and gpu.get("allocated", 0) > 0:
+    total_gpus = gpu["allocated"]
+    gpu_jobs = gpu.get("jobs", [])
+    print()
+    print(f"  {DIM}GPU Allocation:{RESET}  {CYAN}{total_gpus} GPU{'s' if total_gpus != 1 else ''}{RESET}")
+    for gj in gpu_jobs[:5]:
+        gn = gj.get("name", "?")
+        if len(gn) > 20:
+            gn = gn[:19] + "~"
+        print(f"    {gn:<22s}  {CYAN}{gj.get('gpus', 0)} GPU{'s' if gj.get('gpus', 0) != 1 else ''}{RESET}  {DIM}{gj.get('job_id', '')}{RESET}")
+
+# Pending job details (top reasons)
+pending_details = data.get("pending_details", [])
+if pending_details:
+    # Aggregate reasons
+    reasons = {}
+    for pj in pending_details:
+        r = pj.get("reason", "Unknown")
+        reasons[r] = reasons.get(r, 0) + 1
+    print()
+    print(f"  {DIM}Pending Reasons:{RESET}")
+    for reason, cnt in sorted(reasons.items(), key=lambda x: -x[1])[:5]:
+        rc = YELLOW if reason in ("Priority", "Resources") else RED if "Limit" in reason else DIM
+        print(f"    {rc}{reason:<24s}{RESET}  {cnt} job{'s' if cnt != 1 else ''}")
+    # Show ETA for first pending job with a start time
+    for pj in pending_details[:5]:
+        if pj.get("start_time"):
+            eta = pj["start_time"]
+            if "T" in eta:
+                eta = eta.split("T")[1][:8]
+            pn = pj.get("name", "?")
+            if len(pn) > 16:
+                pn = pn[:15] + "~"
+            print(f"  {DIM}Next ETA:{RESET}  {GREEN}{eta}{RESET}  {DIM}({pn}){RESET}")
+            break
+
+# Usage budget
+budget = data.get("budget")
+if budget:
+    uh = budget.get("user_hours", 0)
+    ah = budget.get("used_hours", 0)
+    acct_name = budget.get("account", "?")
+    print()
+    print(f"  {DIM}Usage This Month ({acct_name}):{RESET}")
+    print(f"    You        {CYAN}{uh:,.0f}{RESET} hours")
+    print(f"    Account    {ah:,.0f} hours")
+
+# Job history sparkline
+history = data.get("history")
+if history and (history.get("total_completed", 0) > 0 or history.get("total_failed", 0) > 0):
+    chars = "\u2581\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
+    buckets = history.get("buckets", [])
+    tc = history.get("total_completed", 0)
+    tf = history.get("total_failed", 0)
+    if buckets:
+        vals = [b.get("completed", 0) for b in buckets]
+        mx = max(vals) or 1
+        spark_c = "".join(chars[min(int(v / mx * 8), 8)] for v in vals)
+        fvals = [b.get("failed", 0) for b in buckets]
+        fmx = max(fvals) or 1
+        spark_f = "".join(chars[min(int(v / fmx * 8), 8)] for v in fvals) if any(fvals) else ""
+        print()
+        print(f"  {HR}")
+        print(f"  {DIM}24h Job History{RESET}  {GREEN}{tc} done{RESET}  {RED}{tf} failed{RESET}")
+        print(f"  {GREEN}{spark_c}{RESET}")
+        if spark_f and tf > 0:
+            print(f"  {RED}{spark_f}{RESET}  {DIM}(failures){RESET}")
+
 # Account section
 account = data.get("account")
 if account:
@@ -164,6 +236,29 @@ if account:
     print(f"  Jobs         {GREEN}{ar} running{RESET}, {ap} pending")
     if ausers:
         print(f"  Users        {ausers}")
+
+# Failed jobs
+failed = data.get("failed_jobs", [])
+if failed:
+    print()
+    print(f"  {HR}")
+    print(f"  {RED}{BOLD}Recent Failures ({len(failed)}){RESET}")
+    print()
+    for job in failed[:10]:  # show at most 10
+        state = job.get("state", "?")
+        sc = RED if state in ("FAILED", "OOM", "NODE_FAIL") else YELLOW
+        name = job.get("name", "?")
+        if len(name) > 20:
+            name = name[:19] + "~"
+        jid = job.get("job_id", "?")
+        exit_code = job.get("exit_code", "?")
+        end = job.get("end_time", "?")
+        # Show just time portion if it looks like a timestamp
+        if "T" in end:
+            end = end.split("T")[1][:8]
+        print(f"    {sc}{state:<12}{RESET} {name:<20s}  {DIM}{jid}  exit:{exit_code}  {end}{RESET}")
+    if len(failed) > 10:
+        print(f"    {DIM}... and {len(failed) - 10} more{RESET}")
 
 # Fairshare extremes
 top = data.get("top_fs")

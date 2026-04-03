@@ -19,10 +19,12 @@ local config = {
     user = nil,
     qos = nil,
     auto_generate = true,
+    alert = false,
 }
 
 local cached_value = ''
 local timer = nil
+local last_fail_count = 0
 
 --- Read the cache file and update the cached value.
 local function refresh()
@@ -70,6 +72,37 @@ local function refresh()
     cached_value = config.fallback
 end
 
+--- Check for new job failures and notify.
+local function check_failures()
+    if not config.alert then
+        return
+    end
+    local f = io.open(config.cache_file .. '.json', 'r')
+    if not f then
+        return
+    end
+    local content = f:read('*a')
+    f:close()
+    local ok, data = pcall(vim.json.decode, content)
+    if not ok or not data then
+        return
+    end
+    local failed = data.failed_jobs or {}
+    local count = #failed
+    if count > last_fail_count and count > 0 then
+        local new = count - last_fail_count
+        local msg
+        if new == 1 and #failed > 0 then
+            local job = failed[1]
+            msg = string.format('Slurm: job "%s" %s', job.name or '?', job.state or 'FAILED')
+        else
+            msg = string.format('Slurm: %d new job failure(s)', new)
+        end
+        vim.notify(msg, vim.log.levels.ERROR)
+    end
+    last_fail_count = count
+end
+
 --- Get the current Slurm status string.
 --- @return string
 function M.status()
@@ -98,6 +131,7 @@ end
 ---   - fallback: string — text when no data available (default '')
 ---   - user: string|nil — user to query
 ---   - auto_generate: boolean — auto-call slurm-status.sh if cache missing (default true)
+---   - alert: boolean — show vim.notify() on job failures (default false)
 function M.setup(opts)
     opts = opts or {}
     for k, v in pairs(opts) do
@@ -120,6 +154,7 @@ function M.setup(opts)
     end
     timer = vim.fn.timer_start(config.refresh_ms, function()
         refresh()
+        check_failures()
         vim.cmd('redrawstatus')
     end, { ['repeat'] = -1 })
 

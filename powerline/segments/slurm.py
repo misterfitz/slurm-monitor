@@ -49,11 +49,19 @@ def _read_cache(cache_file):
 def _parse_status(text):
     """Parse a status string into components for highlight grouping.
 
-    Input:  'R:5k P:25k fs:0.82 #3/25k qos:normal'
-    Output: [('R:5k P:25k', None), ('fs:0.82', 0.82), ('#3/25k qos:normal', None)]
+    Input:  'R:5k P:25k fs:0.82 #3/25k qos:normal !2'
+    Output: [('R:5k P:25k', None), ('fs:0.82', 0.82), ('#3/25k qos:normal', None), ('!2', 'fail')]
     """
     parts = []
     fs_value = None
+
+    # Extract failure indicator
+    fail_match = re.search(r"!\d+", text)
+    fail_text = None
+    if fail_match:
+        fail_text = fail_match.group(0)
+        text = text[:fail_match.start()].strip() + " " + text[fail_match.end():].strip()
+        text = text.strip()
 
     # Extract fairshare value if present
     fs_match = re.search(r"fs:(\d+\.\d+)", text)
@@ -72,6 +80,9 @@ def _parse_status(text):
             parts.append((after, None))
     else:
         parts.append((text, None))
+
+    if fail_text:
+        parts.append((fail_text, "fail"))
 
     return parts
 
@@ -106,8 +117,11 @@ def slurm_status(pl, user=None, cache_file=None):
     segments = []
     parts = _parse_status(text)
 
-    for content, fs_value in parts:
-        hl = _fs_highlight(fs_value)
+    for content, value in parts:
+        if value == "fail":
+            hl = "slurm:critical"
+        else:
+            hl = _fs_highlight(value)
         segments.append({
             "contents": content,
             "highlight_groups": [hl, "slurm"],

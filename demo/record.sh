@@ -57,17 +57,17 @@ python3 "$REPO_DIR/scripts/slurm-monitor.py"
 echo ""
 sleep 1
 
-# 2. Personal status with QOS and rank
+# 2. Personal status with failures, GPU, sparkline
 type_cmd "slurm-monitor -u user01"
 python3 "$REPO_DIR/scripts/slurm-monitor.py" -u user01
 echo ""
-sleep 1.2
+sleep 1.5
 
-# 3. Long format with QOS breakdown
+# 3. Long format with everything
 type_cmd "slurm-monitor -u user01 --long"
 python3 "$REPO_DIR/scripts/slurm-monitor.py" -u user01 --long
 echo ""
-sleep 1.5
+sleep 2
 
 # 4. Popup dashboard
 echo ""
@@ -85,7 +85,7 @@ chmod +x "$PLAY_SCRIPT"
 echo "Recording demo..."
 asciinema rec "$CAST_FILE" \
     --cols 80 \
-    --rows 36 \
+    --rows 46 \
     --overwrite \
     --command "bash $PLAY_SCRIPT"
 
@@ -96,7 +96,7 @@ echo "Converting to GIF..."
 agg "$CAST_FILE" "$GIF_FILE" \
     --font-size 14 \
     --cols 80 \
-    --rows 36 \
+    --rows 46 \
     --speed 1.5 \
     --theme monokai
 

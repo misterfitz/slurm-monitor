@@ -50,4 +50,8 @@ fi
 
 # Refresh cache
 $MONITOR_CMD "$@" > "$CACHE_FILE" 2>/dev/null || echo "slurm:err" > "$CACHE_FILE"
+
+# Also write JSON cache for vim/neovim failure alerts
+$MONITOR_CMD "$@" --json > "${CACHE_FILE}.json" 2>/dev/null || true
+
 cat "$CACHE_FILE"
