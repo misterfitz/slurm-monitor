@@ -19,11 +19,21 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Build Slurm image
+        run: |
+          git clone --depth 1 https://github.com/misterfitz/docker-slurm.git /tmp/docker-slurm
+          docker build -t slurm-test-image \
+            --build-arg USER_PRIVILEGE_LEVEL=root \
+            --build-arg ROCKY_VERSION=9 \
+            --build-arg SLURM_VERSION=25.05.1 \
+            --build-arg TIMEZONE=America/New_York \
+            /tmp/docker-slurm/dockerfile_base
+
       - name: Start Slurm container
         run: |
           docker run -d --name slurm-test \
             --hostname linux \
-            nathanhess/slurm:full \
+            slurm-test-image \
             bash -c '/etc/startup.sh && tail -f /dev/null'
 
           # Wait for Slurm daemons to be ready
